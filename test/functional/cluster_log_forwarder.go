@@ -63,6 +63,36 @@ func (p *PipelineBuilder) ToFluentForwardOutputWithVisitor(visit OutputSpecVisit
 	return p.clfb
 }
 
+func (p *PipelineBuilder) ToSyslogOutput() *ClusterLogForwarderBuilder {
+	return p.ToSyslogOutputWithVisitor(func(output *logging.OutputSpec) {})
+}
+
+func (p *PipelineBuilder) ToSyslogOutputWithVisitor(visit OutputSpecVisiter) *ClusterLogForwarderBuilder {
+	clf := p.clfb.Forwarder
+	outputs := clf.Spec.OutputMap()
+	var output *logging.OutputSpec
+	var found bool
+	if output, found = outputs[logging.OutputTypeSyslog]; !found {
+		output = &logging.OutputSpec{
+			Name: logging.OutputTypeSyslog,
+			Type: logging.OutputTypeSyslog,
+			URL:  "tcp://0.0.0.0:24224",
+		}
+		visit(output)
+		clf.Spec.Outputs = append(clf.Spec.Outputs, *output)
+	}
+	added := false
+	clf.Spec.Pipelines, added = addInputToPipeline(p.inputName, forwardPipelineName, clf.Spec.Pipelines)
+	if !added {
+		clf.Spec.Pipelines = append(clf.Spec.Pipelines, logging.PipelineSpec{
+			Name:       forwardPipelineName,
+			InputRefs:  []string{p.inputName},
+			OutputRefs: []string{output.Name},
+		})
+	}
+	return p.clfb
+}
+
 func addInputToPipeline(inputName, pipelineName string, pipelineSpecs []logging.PipelineSpec) ([]logging.PipelineSpec, bool) {
 	pipelines := []logging.PipelineSpec{}
 	found := false

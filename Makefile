@@ -154,7 +154,7 @@ test-functional:
 	FLUENTD_IMAGE=$(FLUENTD_IMAGE) \
 	LOGGING_SHARE_DIR=$(CURDIR)/files \
 	SCRIPTS_DIR=$(CURDIR)/scripts \
-	go test -race ./test/functional/...
+	go test -race ./test/functional/... -timeout=60m
 	go test -cover -race ./test/helpers/...
 .PHONY: test-functional
 

@@ -5,6 +5,7 @@ import (
 
 	"github.com/onsi/ginkgo"
 	"github.com/openshift/cluster-logging-operator/test"
+	"github.com/openshift/cluster-logging-operator/test/helpers/oc"
 	"github.com/openshift/cluster-logging-operator/test/runtime"
 	corev1 "k8s.io/api/core/v1"
 
@@ -31,6 +32,7 @@ func NewTest() *Test {
 
 // Close removes the test namespace unless called from a failed test.
 func (t *Test) Close() {
+	t.CleanupNode()
 	if !ginkgo.CurrentGinkgoTestDescription().Failed {
 		_ = t.Remove(t.NS)
 	} else {
@@ -39,6 +41,16 @@ func (t *Test) Close() {
 		fmt.Printf("To delete all lingering functional test namespaces, run \"oc delete ns -ltest-client=true\"\n")
 		fmt.Printf("============\n\n")
 	}
+}
+
+func (t *Test) CleanupNode() {
+	// deleting pos files
+	_, _ = oc.Exec().
+		WithNamespace(t.NS.Name).
+		Pod("functional").
+		Container("fluentd").
+		WithCmd("rm /var/log/kube-apiserver/audit.log.pos /var/log/audit/audit.log.pos /var/log/es-containers.log.pos").
+		Run()
 }
 
 //NamespaceClient wraps the singleton test client for use with hack testing

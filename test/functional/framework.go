@@ -41,10 +41,17 @@ var fluentdLogPath = map[string]string{
 	k8sAuditLog:    "/var/log/kube-apiserver",
 }
 
-var outputLogFile = map[string]string{
-	applicationLog: ApplicationLogFile,
-	auditLog:       "/tmp/audit-logs",
-	k8sAuditLog:    "/tmp/audit-logs",
+var outputLogFile = map[string]map[string]string{
+	logging.OutputTypeFluentdForward: {
+		applicationLog: ApplicationLogFile,
+		auditLog:       "/tmp/audit-logs",
+		k8sAuditLog:    "/tmp/audit-logs",
+	},
+	logging.OutputTypeSyslog: {
+		applicationLog: "/var/log/infra.log",
+		auditLog:       "/var/log/infra.log",
+		k8sAuditLog:    "/var/log/infra.log",
+	},
 }
 
 var (
@@ -73,7 +80,7 @@ func init() {
 
 func NewFluentdFunctionalFramework() *FluentdFunctionalFramework {
 	test := client.NewTest()
-	return NewFluentdFunctionalFrameworkUsing(client.NewTest(), test.Close, 0)
+	return NewFluentdFunctionalFrameworkUsing(test, test.Close, 0)
 }
 
 func NewFluentdFunctionalFrameworkUsing(t *client.Test, fnClose func(), verbosity int) *FluentdFunctionalFramework {
@@ -259,8 +266,13 @@ func (f *FluentdFunctionalFramework) DeployWithVisitor(visit runtime.PodBuilderV
 func (f *FluentdFunctionalFramework) addOutputContainers(b *runtime.PodBuilder, outputs []logging.OutputSpec) error {
 	log.V(2).Info("Adding outputs", "outputs", outputs)
 	for _, output := range outputs {
-		if output.Type == logging.OutputTypeFluentdForward {
+		switch output.Type {
+		case logging.OutputTypeFluentdForward:
 			if err := f.addForwardOutput(b, output); err != nil {
+				return err
+			}
+		case logging.OutputTypeSyslog:
+			if err := f.addSyslogOutput(b, output); err != nil {
 				return err
 			}
 		}
@@ -298,33 +310,40 @@ func (f *FluentdFunctionalFramework) WritesNApplicationLogsOfSize(numOfLogs, siz
 
 func (f *FluentdFunctionalFramework) WriteMessagesToApplicationLog(msg string, numOfLogs int) error {
 	filepath := fmt.Sprintf("/var/log/containers/%s_%s_%s-%s.log", f.pod.Name, f.pod.Namespace, constants.FluentdName, f.fluentContainerId)
+	msg = fmt.Sprintf("$(date -u +'%%Y-%%m-%%dT%%H:%%M:%%S.%%N%%:z') stdout F \"%s\"", msg)
 	return f.WriteMessagesToLog(msg, numOfLogs, filepath)
 }
 
 func (f *FluentdFunctionalFramework) WriteMessagesToLog(msg string, numOfLogs int, filename string) error {
 	logPath := filepath.Dir(filename)
 	cmd := fmt.Sprintf("bash -c 'mkdir -p %s;for n in {1..%d};do echo \"%s\" >> %s;done'", logPath, numOfLogs, msg, filename)
+	fmt.Println(cmd)
 	result, err := f.RunCommand(constants.FluentdName, "bash", "-c", cmd)
 	log.V(3).Info("FluentdFunctionalFramework.WriteMessagesToLog", "result", result, "err", err)
 	return err
 }
 
-func (f *FluentdFunctionalFramework) ReadApplicationLogsFrom(outputName string) (result string, err error) {
+func (f *FluentdFunctionalFramework) ReadApplicationLogsFrom(outputName string) (results []string, err error) {
 	return f.ReadLogsFrom(outputName, applicationLog)
 }
 
-func (f *FluentdFunctionalFramework) ReadAuditLogsFrom(outputName string) (result string, err error) {
+func (f *FluentdFunctionalFramework) ReadAuditLogsFrom(outputName string) (results []string, err error) {
 	return f.ReadLogsFrom(outputName, auditLog)
 }
 
-func (f *FluentdFunctionalFramework) Readk8sAuditLogsFrom(outputName string) (result string, err error) {
+func (f *FluentdFunctionalFramework) Readk8sAuditLogsFrom(outputName string) (results []string, err error) {
 	return f.ReadLogsFrom(outputName, k8sAuditLog)
 }
 
-func (f *FluentdFunctionalFramework) ReadLogsFrom(outputName string, outputLogType string) (result string, err error) {
-	file, ok := outputLogFile[outputLogType]
+func (f *FluentdFunctionalFramework) ReadLogsFrom(outputName string, outputLogType string) (results []string, err error) {
+	var result string
+	outputType, ok := outputLogFile[outputName]
 	if !ok {
-		return "", fmt.Errorf(fmt.Sprintf("can't find log of type %s", outputLogType))
+		return nil, fmt.Errorf(fmt.Sprintf("cant find output of type %s", outputName))
+	}
+	file, ok := outputType[outputLogType]
+	if !ok {
+		return nil, fmt.Errorf(fmt.Sprintf("can't find log of type %s", outputLogType))
 	}
 	err = wait.PollImmediate(defaultRetryInterval, maxDuration, func() (done bool, err error) {
 		result, err = f.RunCommand(strings.ToLower(outputName), "cat", file)
@@ -335,10 +354,14 @@ func (f *FluentdFunctionalFramework) ReadLogsFrom(outputName string, outputLogTy
 		return false, nil
 	})
 	if err == nil {
-		result = fmt.Sprintf("[%s]", strings.Join(strings.Split(strings.TrimSpace(result), "\n"), ","))
+		results = strings.Split(strings.TrimSpace(result), "\n")
 	}
 	log.V(4).Info("Returning", "logs", result)
-	return result, err
+	return results, err
+}
+
+func ToJsonLogs(logs []string) string {
+	return fmt.Sprintf("[%s]", strings.Join(logs, ","))
 }
 
 func (f *FluentdFunctionalFramework) ReadNApplicationLogsFrom(n uint64, outputName string) ([]string, error) {
